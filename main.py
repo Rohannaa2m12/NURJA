@@ -551,3 +551,82 @@ def ema(xs: list[float], n: int) -> list[float]:
             m = x * k + m * (1 - k)
         out[i] = m
     return out
+
+
+def rsi(xs: list[float], n: int = 14) -> list[float]:
+    if n <= 1:
+        raise ValueError("rsi n<=1")
+    out: list[float] = [NAN] * len(xs)
+    gains = 0.0
+    losses = 0.0
+    for i in range(1, len(xs)):
+        d = xs[i] - xs[i - 1]
+        g = max(0.0, d)
+        l = max(0.0, -d)
+        if i <= n:
+            gains += g
+            losses += l
+            if i == n:
+                rs = _safe_div(gains, losses, default=0.0)
+                out[i] = 100 - (100 / (1 + rs))
+        else:
+            gains = (gains * (n - 1) + g) / n
+            losses = (losses * (n - 1) + l) / n
+            rs = _safe_div(gains, losses, default=0.0)
+            out[i] = 100 - (100 / (1 + rs))
+    return out
+
+
+def atr(candles: list[Candle], n: int = 14) -> list[float]:
+    if n <= 1:
+        raise ValueError("atr n<=1")
+    out: list[float] = [NAN] * len(candles)
+    trs: list[float] = []
+    for i, cd in enumerate(candles):
+        if i == 0:
+            tr = cd.h - cd.l
+        else:
+            prev = candles[i - 1].c
+            tr = max(cd.h - cd.l, abs(cd.h - prev), abs(cd.l - prev))
+        trs.append(tr)
+    # Wilder smoothing
+    a = 0.0
+    for i, tr in enumerate(trs):
+        if i == n:
+            a = sum(trs[1 : n + 1]) / n
+            out[i] = a
+        elif i > n:
+            a = (a * (n - 1) + tr) / n
+            out[i] = a
+    return out
+
+
+def zscore(xs: list[float], n: int) -> list[float]:
+    if n <= 1:
+        raise ValueError("zscore n<=1")
+    out: list[float] = [NAN] * len(xs)
+    win: list[float] = []
+    for i, x in enumerate(xs):
+        win.append(x)
+        if len(win) > n:
+            win.pop(0)
+        if len(win) == n:
+            mu = statistics.fmean(win)
+            sd = statistics.pstdev(win)
+            if sd <= 1e-12:
+                out[i] = 0.0
+            else:
+                out[i] = (x - mu) / sd
+    return out
+
+
+# ---------------------------
+# Portfolio & execution model
+# ---------------------------
+
+
+@dataclasses.dataclass
+class Fees:
+    maker_bps: float = 2.0
+    taker_bps: float = 6.0
+    slippage_bps: float = 3.0
