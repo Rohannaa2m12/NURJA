@@ -314,3 +314,82 @@ class NurjaDB:
         trades: list["Trade"],
         metrics: dict[str, float],
     ) -> None:
+        with self.tx() as c:
+            c.execute(
+                """
+                INSERT INTO runs(id, created_at, kind, symbol, strategy, seed, config_json, summary_json)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    run_id,
+                    int(time.time()),
+                    kind,
+                    symbol,
+                    strategy,
+                    int(seed),
+                    json.dumps(config, sort_keys=True, default=str),
+                    json.dumps(summary, sort_keys=True, default=str),
+                ),
+            )
+            for i, cd in enumerate(candles):
+                c.execute(
+                    "INSERT INTO candles(run_id, i, t, o, h, l, c, v) VALUES(?, ?, ?, ?, ?, ?, ?, ?);",
+                    (run_id, i, cd.t, cd.o, cd.h, cd.l, cd.c, cd.v),
+                )
+            for i, tr in enumerate(trades):
+                c.execute(
+                    "INSERT INTO trades(run_id, i, t, side, qty, price, fee, note) VALUES(?, ?, ?, ?, ?, ?, ?, ?);",
+                    (run_id, i, tr.t, tr.side, tr.qty, tr.price, tr.fee, tr.note),
+                )
+            for k, v in metrics.items():
+                c.execute("INSERT INTO metrics(run_id, k, v) VALUES(?, ?, ?);", (run_id, k, float(v)))
+
+    def list_runs(self, limit: int = 20) -> list[sqlite3.Row]:
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        cur = self._conn.execute(
+            "SELECT id, created_at, kind, symbol, strategy, seed FROM runs ORDER BY created_at DESC LIMIT ?;",
+            (int(limit),),
+        )
+        return list(cur.fetchall())
+
+    def load_run_candles(self, run_id: str) -> list[sqlite3.Row]:
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        cur = self._conn.execute(
+            "SELECT t, o, h, l, c, v FROM candles WHERE run_id=? ORDER BY i ASC;",
+            (run_id,),
+        )
+        return list(cur.fetchall())
+
+    def load_run_trades(self, run_id: str) -> list[sqlite3.Row]:
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        cur = self._conn.execute(
+            "SELECT t, side, qty, price, fee, note FROM trades WHERE run_id=? ORDER BY i ASC;",
+            (run_id,),
+        )
+        return list(cur.fetchall())
+
+    def load_run_metrics(self, run_id: str) -> dict[str, float]:
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        cur = self._conn.execute("SELECT k, v FROM metrics WHERE run_id=?;", (run_id,))
+        out: dict[str, float] = {}
+        for row in cur.fetchall():
+            out[str(row["k"])] = float(row["v"])
+        return out
+
+
+# ---------------------------
+# Market data model
+# ---------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class Candle:
+    t: int
