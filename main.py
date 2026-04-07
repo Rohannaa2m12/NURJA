@@ -472,3 +472,82 @@ class SyntheticMarket:
         anchor = price
 
         out: list[Candle] = []
+        tcur = int(start_ts)
+
+        for i in range(cfg.n):
+            # stochastic vol
+            vol = max(1e-6, vol * math.exp(self.rng.gauss(0.0, cfg.vol_of_vol) * 0.05))
+
+            # jump
+            jump = 0.0
+            if self.rng.random() < cfg.jump_prob:
+                jump = self.rng.gauss(0.0, cfg.jump_sigma)
+
+            # mean reversion towards anchor
+            reversion = cfg.mean_revert * (anchor - price) / max(1e-9, anchor)
+            drift = cfg.drift + reversion * 0.001
+
+            # return
+            ret = drift + self.rng.gauss(0.0, vol) + jump + self.rng.gauss(0.0, cfg.micro_noise)
+            ret = _clamp(ret, -0.25, 0.25)
+            nxt = max(0.01, price * math.exp(ret))
+
+            o = price
+            c = nxt
+
+            # intra-candle range
+            span = abs(ret) + abs(self.rng.gauss(0.0, vol)) * 0.6 + 0.0005
+            span = _clamp(span, 0.0006, 0.12)
+            hi = max(o, c) * (1 + span * self.rng.random())
+            lo = min(o, c) * (1 - span * self.rng.random())
+
+            # volume
+            v = cfg.volume_base * (1 + cfg.volume_noise * self.rng.gauss(0.0, 1.0))
+            v = max(1.0, v * (1 + abs(ret) * 25))
+
+            out.append(Candle(t=tcur, o=o, h=hi, l=lo, c=c, v=v))
+
+            # slowly update anchor
+            anchor = 0.9995 * anchor + 0.0005 * c
+            price = c
+            tcur += cfg.timeframe_sec
+
+        _assert_candles(out)
+        self.log.info("market", "generated synthetic candles", symbol=cfg.symbol, n=len(out), seed=cfg.seed)
+        return out
+
+
+# ---------------------------
+# Indicators
+# ---------------------------
+
+
+def sma(xs: list[float], n: int) -> list[float]:
+    if n <= 0:
+        raise ValueError("sma n<=0")
+    out: list[float] = [NAN] * len(xs)
+    s = 0.0
+    for i, x in enumerate(xs):
+        s += x
+        if i >= n:
+            s -= xs[i - n]
+        if i >= n - 1:
+            out[i] = s / n
+    return out
+
+
+def ema(xs: list[float], n: int) -> list[float]:
+    if n <= 0:
+        raise ValueError("ema n<=0")
+    out: list[float] = [NAN] * len(xs)
+    k = 2 / (n + 1)
+    m = 0.0
+    started = False
+    for i, x in enumerate(xs):
+        if not started:
+            m = x
+            started = True
+        else:
+            m = x * k + m * (1 - k)
+        out[i] = m
+    return out
