@@ -630,3 +630,82 @@ class Fees:
     maker_bps: float = 2.0
     taker_bps: float = 6.0
     slippage_bps: float = 3.0
+
+
+@dataclasses.dataclass
+class RiskConfig:
+    max_pos_pct: float = 0.35
+    max_leverage: float = 1.0
+    max_daily_loss_pct: float = 0.04
+    max_trade_loss_pct: float = 0.02
+    kill_switch_drawdown_pct: float = 0.18
+    min_order_usd: float = 15.0
+    max_orders_per_hour: int = 12
+    cooldown_sec: int = 20
+
+
+@dataclasses.dataclass
+class Portfolio:
+    base_ccy: str = "USD"
+    cash: float = 10_000.0
+    asset_qty: float = 0.0
+    avg_entry: float = 0.0
+    realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    peak_equity: float = 10_000.0
+    dd_killed: bool = False
+
+    def equity(self, px: float) -> float:
+        return self.cash + self.asset_qty * px
+
+    def update_peak(self, px: float) -> None:
+        eq = self.equity(px)
+        if eq > self.peak_equity:
+            self.peak_equity = eq
+
+    def drawdown(self, px: float) -> float:
+        eq = self.equity(px)
+        if self.peak_equity <= 0:
+            return 0.0
+        return max(0.0, 1.0 - (eq / self.peak_equity))
+
+
+@dataclasses.dataclass
+class ExecutionContext:
+    fees: Fees
+    risk: RiskConfig
+    log: Logger
+    rng: random.Random
+
+
+def _fee_for(side: str, notional: float, fees: Fees, passive: bool) -> float:
+    bps = fees.maker_bps if passive else fees.taker_bps
+    return notional * (bps / 10_000.0)
+
+
+def _apply_slippage(side: str, px: float, fees: Fees, rng: random.Random) -> float:
+    slip = fees.slippage_bps / 10_000.0
+    # add randomness to slippage to stress-test strategies
+    jitter = abs(rng.gauss(0.0, slip * 0.35))
+    s = slip + jitter
+    if side.upper() == "BUY":
+        return px * (1 + s)
+    return px * (1 - s)
+
+
+class PaperExchange:
+    """
+    A basic paper exchange:
+    - no order book, marketable trades executed with slippage+fees
+    - only spot long/flat in this simplified model
+    """
+
+    def __init__(self, ctx: ExecutionContext) -> None:
+        self.ctx = ctx
+        self._last_order_ts: float = 0.0
+        self._orders_in_window: list[float] = []
+
+    def _rate_limit(self, now: float) -> None:
+        # rolling 1h window
+        self._orders_in_window = [t0 for t0 in self._orders_in_window if now - t0 <= 3600]
+        if len(self._orders_in_window) >= self.ctx.risk.max_orders_per_hour:
