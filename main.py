@@ -77,3 +77,82 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     if x < lo:
         return lo
     if x > hi:
+        return hi
+    return x
+
+
+def _safe_div(a: float, b: float, default: float = 0.0) -> float:
+    if b == 0:
+        return default
+    return a / b
+
+
+def _fmt_money(x: float, ccy: str = "USD") -> str:
+    if math.isnan(x):
+        return "NaN"
+    sign = "-" if x < 0 else ""
+    x = abs(x)
+    if x >= 1_000_000:
+        return f"{sign}{ccy} {x/1_000_000:.3f}m"
+    if x >= 1_000:
+        return f"{sign}{ccy} {x/1_000:.3f}k"
+    return f"{sign}{ccy} {x:.2f}"
+
+
+def _fmt_pct(x: float) -> str:
+    if math.isnan(x):
+        return "NaN"
+    return f"{x*100:.2f}%"
+
+
+def _sha256_hex(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def _blake2b_hex(b: bytes, n: int = 32) -> str:
+    h = hashlib.blake2b(b, digest_size=n)
+    return h.hexdigest()
+
+
+def _rand_id(prefix: str) -> str:
+    # deterministic length, unpredictable content
+    raw = secrets.token_bytes(24) + prefix.encode("utf-8") + secrets.token_bytes(7)
+    return f"{prefix}_{_blake2b_hex(raw, 16)}"
+
+
+def _human_time(seconds: float) -> str:
+    seconds = float(seconds)
+    if seconds < 1e-3:
+        return f"{seconds*1e6:.1f}µs"
+    if seconds < 1:
+        return f"{seconds*1e3:.1f}ms"
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    if seconds < 3600:
+        return f"{seconds/60:.2f}m"
+    return f"{seconds/3600:.2f}h"
+
+
+class NurjaError(Exception):
+    pass
+
+
+class ConfigError(NurjaError):
+    pass
+
+
+class DataError(NurjaError):
+    pass
+
+
+class StrategyError(NurjaError):
+    pass
+
+
+class RiskError(NurjaError):
+    pass
+
+
+class ExchangeError(NurjaError):
+    pass
+
