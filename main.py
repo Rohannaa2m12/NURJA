@@ -235,3 +235,82 @@ class NurjaDB:
         assert self._conn is not None
         try:
             yield self._conn
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _migrate(self) -> None:
+        assert self._conn is not None
+        with self.tx() as c:
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY,
+                    created_at INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    seed INTEGER NOT NULL,
+                    config_json TEXT NOT NULL,
+                    summary_json TEXT NOT NULL
+                );
+                """
+            )
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS candles (
+                    run_id TEXT NOT NULL,
+                    i INTEGER NOT NULL,
+                    t INTEGER NOT NULL,
+                    o REAL NOT NULL,
+                    h REAL NOT NULL,
+                    l REAL NOT NULL,
+                    c REAL NOT NULL,
+                    v REAL NOT NULL,
+                    PRIMARY KEY (run_id, i),
+                    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+                );
+                """
+            )
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trades (
+                    run_id TEXT NOT NULL,
+                    i INTEGER NOT NULL,
+                    t INTEGER NOT NULL,
+                    side TEXT NOT NULL,
+                    qty REAL NOT NULL,
+                    price REAL NOT NULL,
+                    fee REAL NOT NULL,
+                    note TEXT NOT NULL,
+                    PRIMARY KEY (run_id, i),
+                    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+                );
+                """
+            )
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS metrics (
+                    run_id TEXT NOT NULL,
+                    k TEXT NOT NULL,
+                    v REAL NOT NULL,
+                    PRIMARY KEY (run_id, k),
+                    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+                );
+                """
+            )
+
+    def save_run(
+        self,
+        run_id: str,
+        kind: str,
+        symbol: str,
+        strategy: str,
+        seed: int,
+        config: dict[str, t.Any],
+        summary: dict[str, t.Any],
+        candles: list["Candle"],
+        trades: list["Trade"],
+        metrics: dict[str, float],
+    ) -> None:
