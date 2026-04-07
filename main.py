@@ -156,3 +156,82 @@ class RiskError(NurjaError):
 class ExchangeError(NurjaError):
     pass
 
+
+# ---------------------------
+# Logging
+# ---------------------------
+
+
+@dataclasses.dataclass
+class LogEvent:
+    at: float
+    level: str
+    scope: str
+    msg: str
+    data: dict[str, t.Any] = dataclasses.field(default_factory=dict)
+
+
+class Logger:
+    def __init__(self, verbose: bool = False) -> None:
+        self.verbose = verbose
+        self._events: list[LogEvent] = []
+
+    def emit(self, level: str, scope: str, msg: str, **data: t.Any) -> None:
+        ev = LogEvent(at=time.time(), level=level.upper(), scope=scope, msg=msg, data=dict(data))
+        self._events.append(ev)
+        if self.verbose or level.upper() in {"WARN", "ERROR"}:
+            stamp = dt.datetime.fromtimestamp(ev.at).strftime("%H:%M:%S")
+            payload = ""
+            if data:
+                payload = " " + json.dumps(data, sort_keys=True, default=str)
+            print(f"[{stamp}] {ev.level:<5} {ev.scope}: {ev.msg}{payload}")
+
+    def info(self, scope: str, msg: str, **data: t.Any) -> None:
+        self.emit("INFO", scope, msg, **data)
+
+    def warn(self, scope: str, msg: str, **data: t.Any) -> None:
+        self.emit("WARN", scope, msg, **data)
+
+    def error(self, scope: str, msg: str, **data: t.Any) -> None:
+        self.emit("ERROR", scope, msg, **data)
+
+    def dump_json(self) -> str:
+        return json.dumps([dataclasses.asdict(e) for e in self._events], indent=2, sort_keys=True, default=str)
+
+
+# ---------------------------
+# SQLite persistence
+# ---------------------------
+
+
+class NurjaDB:
+    def __init__(self, path: str, log: Logger) -> None:
+        self.path = path
+        self.log = log
+        self._conn: sqlite3.Connection | None = None
+
+    def connect(self) -> None:
+        if self._conn is not None:
+            return
+        self._conn = sqlite3.connect(self.path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA synchronous=NORMAL;")
+        self._conn.execute("PRAGMA foreign_keys=ON;")
+        self._migrate()
+        self.log.info("db", "connected", path=self.path)
+
+    def close(self) -> None:
+        if self._conn is None:
+            return
+        self._conn.close()
+        self._conn = None
+        self.log.info("db", "closed")
+
+    @contextlib.contextmanager
+    def tx(self) -> t.Iterator[sqlite3.Connection]:
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        try:
+            yield self._conn
