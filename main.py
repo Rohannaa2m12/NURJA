@@ -788,3 +788,82 @@ class Strategy:
     def warmup(self) -> int:
         return 50
 
+    def on_candle(self, i: int, candles: list[Candle], pf: Portfolio) -> Signal:
+        raise NotImplementedError
+
+
+class LoomMomentum(Strategy):
+    name = "loom_momentum"
+
+    def __init__(self, fast: int = 12, slow: int = 48, rsi_n: int = 14) -> None:
+        self.fast = fast
+        self.slow = slow
+        self.rsi_n = rsi_n
+
+    def warmup(self) -> int:
+        return max(self.fast, self.slow, self.rsi_n) + 5
+
+    def on_candle(self, i: int, candles: list[Candle], pf: Portfolio) -> Signal:
+        closes = [c.c for c in candles[: i + 1]]
+        ef = ema(closes, self.fast)[i]
+        es = ema(closes, self.slow)[i]
+        r = rsi(closes, self.rsi_n)[i]
+        px = closes[i]
+
+        if math.isnan(ef) or math.isnan(es) or math.isnan(r):
+            return Signal(t=candles[i].t, action="HOLD", strength=0.0, reason="warmup")
+
+        macd = ef - es
+        macd_n = _safe_div(macd, px, default=0.0)
+        score = _clamp(macd_n * 120.0 + (r - 50.0) / 50.0, -2.0, 2.0)
+
+        if score > 0.55 and r < 72:
+            return Signal(t=candles[i].t, action="BUY", strength=min(1.0, score / 2.0), reason="trend_up",
+                          meta={"macd": macd, "rsi": r})
+        if score < -0.55 and r > 28:
+            return Signal(t=candles[i].t, action="SELL", strength=min(1.0, abs(score) / 2.0), reason="trend_down",
+                          meta={"macd": macd, "rsi": r})
+        return Signal(t=candles[i].t, action="HOLD", strength=0.0, reason="no_edge", meta={"macd": macd, "rsi": r})
+
+
+class LoomMeanRevert(Strategy):
+    name = "loom_meanrevert"
+
+    def __init__(self, win: int = 40, z: float = 1.10, take: float = 0.65) -> None:
+        self.win = win
+        self.z = z
+        self.take = take
+
+    def warmup(self) -> int:
+        return self.win + 5
+
+    def on_candle(self, i: int, candles: list[Candle], pf: Portfolio) -> Signal:
+        closes = [c.c for c in candles[: i + 1]]
+        z = zscore(closes, self.win)[i]
+        px = closes[i]
+        if math.isnan(z):
+            return Signal(t=candles[i].t, action="HOLD", strength=0.0, reason="warmup")
+        # mean reversion: buy when oversold, sell when overbought.
+        if z <= -self.z and pf.asset_qty <= 0:
+            strength = _clamp(abs(z) / (self.z * 2.0), 0.0, 1.0)
+            return Signal(t=candles[i].t, action="BUY", strength=strength, reason="oversold",
+                          meta={"z": z, "px": px})
+        if z >= self.z and pf.asset_qty > 0:
+            strength = _clamp(abs(z) / (self.z * 2.0), 0.0, 1.0)
+            return Signal(t=candles[i].t, action="SELL", strength=strength, reason="overbought",
+                          meta={"z": z, "px": px})
+        # take-profit / stop-ish using entry vs px
+        if pf.asset_qty > 0 and pf.avg_entry > 0:
+            up = (px / pf.avg_entry) - 1.0
+            if up >= self.take:
+                return Signal(t=candles[i].t, action="SELL", strength=1.0, reason="take_profit",
+                              meta={"up": up, "px": px})
+        return Signal(t=candles[i].t, action="HOLD", strength=0.0, reason="no_edge", meta={"z": z, "px": px})
+
+
+class LoomBreakout(Strategy):
+    name = "loom_breakout"
+
+    def __init__(self, n: int = 60, atr_n: int = 14, k: float = 0.85) -> None:
+        self.n = n
+        self.atr_n = atr_n
