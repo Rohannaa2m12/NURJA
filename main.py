@@ -709,3 +709,82 @@ class PaperExchange:
         # rolling 1h window
         self._orders_in_window = [t0 for t0 in self._orders_in_window if now - t0 <= 3600]
         if len(self._orders_in_window) >= self.ctx.risk.max_orders_per_hour:
+            raise RiskError("rate limit: too many orders per hour")
+        # cooldown
+        if now - self._last_order_ts < self.ctx.risk.cooldown_sec:
+            raise RiskError("cooldown: too soon after last order")
+        self._orders_in_window.append(now)
+        self._last_order_ts = now
+
+    def buy(self, pf: Portfolio, qty: float, px: float, t: int, note: str) -> Trade:
+        now = time.time()
+        self._rate_limit(now)
+        if qty <= 0:
+            raise ExchangeError("buy qty<=0")
+        fill = _apply_slippage("BUY", px, self.ctx.fees, self.ctx.rng)
+        notional = qty * fill
+        if notional < self.ctx.risk.min_order_usd:
+            raise RiskError("order too small")
+        fee = _fee_for("BUY", notional, self.ctx.fees, passive=False)
+        total = notional + fee
+        if total > pf.cash + 1e-9:
+            raise RiskError("insufficient cash")
+
+        # update average entry
+        new_qty = pf.asset_qty + qty
+        if new_qty <= 0:
+            pf.avg_entry = 0.0
+        else:
+            pf.avg_entry = (pf.avg_entry * pf.asset_qty + fill * qty) / new_qty
+        pf.asset_qty = new_qty
+        pf.cash -= total
+        pf.fees_paid += fee
+        return Trade(t=t, side="BUY", qty=qty, price=fill, fee=fee, note=note)
+
+    def sell(self, pf: Portfolio, qty: float, px: float, t: int, note: str) -> Trade:
+        now = time.time()
+        self._rate_limit(now)
+        if qty <= 0:
+            raise ExchangeError("sell qty<=0")
+        if qty > pf.asset_qty + 1e-12:
+            raise RiskError("insufficient asset qty")
+        fill = _apply_slippage("SELL", px, self.ctx.fees, self.ctx.rng)
+        notional = qty * fill
+        if notional < self.ctx.risk.min_order_usd:
+            raise RiskError("order too small")
+        fee = _fee_for("SELL", notional, self.ctx.fees, passive=False)
+        proceeds = notional - fee
+        pf.cash += proceeds
+        pf.asset_qty -= qty
+        pf.fees_paid += fee
+
+        # realized pnl
+        pnl = (fill - pf.avg_entry) * qty
+        pf.realized_pnl += pnl
+        if pf.asset_qty <= 1e-12:
+            pf.asset_qty = 0.0
+            pf.avg_entry = 0.0
+
+        return Trade(t=t, side="SELL", qty=qty, price=fill, fee=fee, note=note)
+
+
+# ---------------------------
+# Strategy framework
+# ---------------------------
+
+
+@dataclasses.dataclass
+class Signal:
+    t: int
+    action: str  # "BUY" | "SELL" | "HOLD"
+    strength: float
+    reason: str
+    meta: dict[str, t.Any] = dataclasses.field(default_factory=dict)
+
+
+class Strategy:
+    name: str = "base"
+
+    def warmup(self) -> int:
+        return 50
+
