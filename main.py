@@ -393,3 +393,82 @@ class NurjaDB:
 @dataclasses.dataclass(frozen=True)
 class Candle:
     t: int
+    o: float
+    h: float
+    l: float
+    c: float
+    v: float
+
+
+@dataclasses.dataclass(frozen=True)
+class Trade:
+    t: int
+    side: str  # "BUY" | "SELL"
+    qty: float
+    price: float
+    fee: float
+    note: str
+
+
+def _assert_candles(candles: list[Candle]) -> None:
+    if not candles:
+        raise DataError("no candles")
+    last_t = candles[0].t
+    for cd in candles[1:]:
+        if cd.t <= last_t:
+            raise DataError("candles not strictly increasing")
+        if cd.h < cd.l:
+            raise DataError("bad candle hi/lo")
+        if not (cd.l <= cd.o <= cd.h and cd.l <= cd.c <= cd.h):
+            raise DataError("bad candle o/c outside range")
+        last_t = cd.t
+
+
+# ---------------------------
+# Synthetic market generators
+# ---------------------------
+
+
+@dataclasses.dataclass
+class MarketGenConfig:
+    symbol: str = "NURJ/USD"
+    timeframe_sec: int = 60
+    n: int = 720
+    seed: int = 0
+    start_price: float = 100.0
+    drift: float = 0.00002
+    vol: float = 0.0035
+    vol_of_vol: float = 0.15
+    mean_revert: float = 0.05
+    jump_prob: float = 0.006
+    jump_sigma: float = 0.03
+    micro_noise: float = 0.0012
+    volume_base: float = 1200.0
+    volume_noise: float = 0.40
+
+
+class SyntheticMarket:
+    """
+    Produces candles with:
+    - stochastic volatility
+    - weak drift
+    - mean reversion component
+    - occasional jumps
+    - heteroskedastic volumes
+    """
+
+    def __init__(self, cfg: MarketGenConfig, log: Logger) -> None:
+        self.cfg = cfg
+        self.log = log
+        self.rng = random.Random(cfg.seed)
+
+    def generate(self, start_ts: int | None = None) -> list[Candle]:
+        cfg = self.cfg
+        if start_ts is None:
+            start_ts = _ts() - cfg.n * cfg.timeframe_sec
+
+        price = float(cfg.start_price)
+        vol = float(cfg.vol)
+        anchor = price
+
+        out: list[Candle] = []
