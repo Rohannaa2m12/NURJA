@@ -1262,3 +1262,82 @@ def render_report(result: EngineResult) -> str:
 
 # ---------------------------
 # CLI helpers
+# ---------------------------
+
+
+def _parse_int(x: str) -> int:
+    try:
+        return int(x)
+    except Exception as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
+def _parse_float(x: str) -> float:
+    try:
+        return float(x)
+    except Exception as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
+def _seed_or_random(seed: int | None) -> int:
+    if seed is None:
+        # a seed that changes, but still printable
+        return int.from_bytes(secrets.token_bytes(8), "big") ^ int(time.time())
+    return int(seed)
+
+
+def _print_runs(rows: list[sqlite3.Row]) -> None:
+    if not rows:
+        print("No runs saved yet.")
+        return
+    print("Saved runs:")
+    for r in rows:
+        at = dt.datetime.fromtimestamp(int(r["created_at"])).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"- {r['id']}  {at}  {r['kind']:<7}  {r['symbol']:<10}  {r['strategy']:<14}  seed={r['seed']}")
+
+
+def _sparkline(xs: list[float], width: int = 42) -> str:
+    if not xs:
+        return ""
+    lo = min(xs)
+    hi = max(xs)
+    if abs(hi - lo) < 1e-12:
+        return "─" * min(width, len(xs))
+    chars = "▁▂▃▄▅▆▇█"
+    step = max(1, len(xs) // width)
+    sampled = xs[::step]
+    out = []
+    for x in sampled[:width]:
+        z = (x - lo) / (hi - lo)
+        idx = int(_clamp(z, 0.0, 0.999999) * len(chars))
+        out.append(chars[idx])
+    return "".join(out)
+
+
+def _equity_curve(result: EngineResult) -> list[float]:
+    # replay quickly from trades
+    cash = 10_000.0
+    qty = 0.0
+    curve: list[float] = []
+    trades = sorted(result.trades, key=lambda t0: t0.t)
+    ti = 0
+    for cd in result.candles:
+        while ti < len(trades) and trades[ti].t <= cd.t:
+            tr = trades[ti]
+            notional = tr.qty * tr.price
+            if tr.side == "BUY":
+                cash -= notional + tr.fee
+                qty += tr.qty
+            else:
+                cash += notional - tr.fee
+                qty -= tr.qty
+            ti += 1
+        curve.append(cash + qty * cd.c)
+    return curve
+
+
+def _quickstart(log: Logger, db: NurjaDB) -> int:
+    seed = _seed_or_random(None)
+    symbol = "NURJ/USD"
+    strat = "loom_momentum"
+    mg = MarketGenConfig(symbol=symbol, timeframe_sec=60, n=720, seed=seed, start_price=100.0)
