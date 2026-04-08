@@ -867,3 +867,82 @@ class LoomBreakout(Strategy):
     def __init__(self, n: int = 60, atr_n: int = 14, k: float = 0.85) -> None:
         self.n = n
         self.atr_n = atr_n
+        self.k = k
+
+    def warmup(self) -> int:
+        return max(self.n, self.atr_n) + 5
+
+    def on_candle(self, i: int, candles: list[Candle], pf: Portfolio) -> Signal:
+        if i < self.warmup():
+            return Signal(t=candles[i].t, action="HOLD", strength=0.0, reason="warmup")
+        window = candles[i - self.n : i]
+        hi = max(c.h for c in window)
+        lo = min(c.l for c in window)
+        px = candles[i].c
+        a = atr(candles[: i + 1], self.atr_n)[i]
+        if math.isnan(a) or a <= 0:
+            return Signal(t=candles[i].t, action="HOLD", strength=0.0, reason="no_atr")
+        band = self.k * a
+        if px > hi + band and pf.asset_qty <= 0:
+            s = _clamp((px - hi) / max(1e-9, px), 0.0, 1.0)
+            return Signal(t=candles[i].t, action="BUY", strength=s, reason="breakout_up", meta={"hi": hi, "atr": a})
+        if px < lo - band and pf.asset_qty > 0:
+            s = _clamp((lo - px) / max(1e-9, lo), 0.0, 1.0)
+            return Signal(t=candles[i].t, action="SELL", strength=s, reason="breakout_down", meta={"lo": lo, "atr": a})
+        return Signal(t=candles[i].t, action="HOLD", strength=0.0, reason="range", meta={"hi": hi, "lo": lo, "atr": a})
+
+
+STRATEGY_REGISTRY: dict[str, t.Callable[[], Strategy]] = {
+    LoomMomentum.name: lambda: LoomMomentum(),
+    LoomMeanRevert.name: lambda: LoomMeanRevert(),
+    LoomBreakout.name: lambda: LoomBreakout(),
+}
+
+
+def make_strategy(name: str) -> Strategy:
+    if name not in STRATEGY_REGISTRY:
+        raise StrategyError(f"unknown strategy: {name}")
+    return STRATEGY_REGISTRY[name]()
+
+
+# ---------------------------
+# Risk manager
+# ---------------------------
+
+
+@dataclasses.dataclass
+class RiskState:
+    start_equity: float
+    day_start_ts: int
+    day_min_equity: float
+    day_max_equity: float
+    day_realized: float = 0.0
+    day_trades: int = 0
+    killed: bool = False
+
+
+class RiskManager:
+    def __init__(self, cfg: RiskConfig, log: Logger) -> None:
+        self.cfg = cfg
+        self.log = log
+
+    def init_state(self, equity: float, t0: int) -> RiskState:
+        return RiskState(start_equity=equity, day_start_ts=t0, day_min_equity=equity, day_max_equity=equity)
+
+    def on_step(self, st: RiskState, pf: Portfolio, px: float, tcur: int) -> None:
+        eq = pf.equity(px)
+        pf.update_peak(px)
+        dd = pf.drawdown(px)
+        if dd >= self.cfg.kill_switch_drawdown_pct:
+            pf.dd_killed = True
+            st.killed = True
+            self.log.warn("risk", "kill-switch drawdown", drawdown=_fmt_pct(dd), eq=_fmt_money(eq))
+
+        # reset day if needed
+        if (tcur - st.day_start_ts) >= 86400:
+            st.day_start_ts = tcur
+            st.start_equity = eq
+            st.day_min_equity = eq
+            st.day_max_equity = eq
+            st.day_realized = 0.0
+            st.day_trades = 0
