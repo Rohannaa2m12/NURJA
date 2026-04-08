@@ -1183,3 +1183,82 @@ def _mkdirp(p: str) -> None:
 def export_run(result: EngineResult, db: NurjaDB, log: Logger, export: bool = True) -> str:
     cfg = {
         "symbol": result.symbol,
+        "strategy": result.strategy,
+        "seed": result.seed,
+        "kind": result.kind,
+        "version": APP_VERSION,
+    }
+    db.save_run(
+        run_id=result.run_id,
+        kind=result.kind,
+        symbol=result.symbol,
+        strategy=result.strategy,
+        seed=result.seed,
+        config=cfg,
+        summary=result.summary,
+        candles=result.candles,
+        trades=result.trades,
+        metrics=result.metrics,
+    )
+
+    if not export:
+        return result.run_id
+
+    _mkdirp(EXPORT_DIR)
+    base = os.path.join(EXPORT_DIR, result.run_id)
+    # summary
+    with open(base + "_summary.json", "w", encoding="utf-8") as f:
+        json.dump(result.summary, f, indent=2, sort_keys=True, default=str)
+    with open(base + "_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(result.metrics, f, indent=2, sort_keys=True, default=str)
+    # candles CSV
+    with open(base + "_candles.csv", "w", encoding="utf-8") as f:
+        f.write("t,o,h,l,c,v\n")
+        for cd in result.candles:
+            f.write(f"{cd.t},{cd.o:.8f},{cd.h:.8f},{cd.l:.8f},{cd.c:.8f},{cd.v:.4f}\n")
+    # trades CSV
+    with open(base + "_trades.csv", "w", encoding="utf-8") as f:
+        f.write("t,side,qty,price,fee,note\n")
+        for tr in result.trades:
+            f.write(f"{tr.t},{tr.side},{tr.qty:.10f},{tr.price:.8f},{tr.fee:.8f},{tr.note}\n")
+
+    log.info("export", "exported run", run_id=result.run_id, dir=EXPORT_DIR)
+    return result.run_id
+
+
+def render_report(result: EngineResult) -> str:
+    m = result.metrics
+    end_eq = float(m.get("equity_end", float("nan")))
+    ret = float(m.get("return", float("nan")))
+    dd = float(m.get("max_drawdown", float("nan")))
+    fees_paid = float(m.get("fees_paid", float("nan")))
+    trades = int(m.get("trades", 0.0))
+    sharpe = float(m.get("sharpe_like", float("nan")))
+    wins = int(m.get("wins", 0.0))
+    losses = int(m.get("losses", 0.0))
+    total = max(1, wins + losses)
+    winrate = wins / total
+
+    lines = []
+    lines.append(f"{APP_NAME} report")
+    lines.append("-" * 60)
+    lines.append(f"run_id:    {result.run_id}")
+    lines.append(f"kind:      {result.kind}")
+    lines.append(f"symbol:    {result.symbol}")
+    lines.append(f"strategy:  {result.strategy}")
+    lines.append(f"seed:      {result.seed}")
+    lines.append("-" * 60)
+    lines.append(f"end eq:    {_fmt_money(end_eq)}")
+    lines.append(f"return:    {_fmt_pct(ret)}")
+    lines.append(f"max dd:    {_fmt_pct(dd)}")
+    lines.append(f"fees:      {_fmt_money(fees_paid)}")
+    lines.append(f"trades:    {trades}")
+    lines.append(f"winrate*:  {_fmt_pct(winrate)}")
+    lines.append(f"sharpe*:   {sharpe:.2f}")
+    lines.append("-" * 60)
+    lines.append("* heuristic metrics for this simplified execution model")
+    return "\n".join(lines)
+
+
+# ---------------------------
+# CLI helpers
