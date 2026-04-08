@@ -1025,3 +1025,82 @@ class NurjaEngine:
         return max(0.0, target_qty)
 
     def _compute_metrics(self, candles: list[Candle], trades: list[Trade]) -> dict[str, float]:
+        closes = [c.c for c in candles]
+        if not closes:
+            return {}
+        end_px = closes[-1]
+        eq = self.pf.equity(end_px)
+        start = float(self.cfg.start_cash)
+        ret = (eq / start) - 1.0 if start > 0 else 0.0
+
+        # equity curve sampling
+        eq_curve: list[float] = []
+        cash = float(self.cfg.start_cash)
+        qty = 0.0
+        avg_entry = 0.0
+        fee_paid = 0.0
+        tr_i = 0
+        for i, cd in enumerate(candles):
+            while tr_i < len(trades) and trades[tr_i].t <= cd.t:
+                tr = trades[tr_i]
+                notional = tr.qty * tr.price
+                if tr.side == "BUY":
+                    total = notional + tr.fee
+                    cash -= total
+                    fee_paid += tr.fee
+                    new_qty = qty + tr.qty
+                    avg_entry = (avg_entry * qty + tr.price * tr.qty) / max(1e-12, new_qty)
+                    qty = new_qty
+                else:
+                    proceeds = notional - tr.fee
+                    cash += proceeds
+                    fee_paid += tr.fee
+                    qty -= tr.qty
+                    if qty <= 1e-12:
+                        qty = 0.0
+                        avg_entry = 0.0
+                tr_i += 1
+            eq_curve.append(cash + qty * cd.c)
+
+        # drawdown
+        peak = -1e18
+        max_dd = 0.0
+        for e in eq_curve:
+            if e > peak:
+                peak = e
+            if peak > 0:
+                dd = max(0.0, 1.0 - (e / peak))
+                max_dd = max(max_dd, dd)
+
+        # returns stats
+        rets: list[float] = []
+        for i in range(1, len(eq_curve)):
+            rets.append(_safe_div(eq_curve[i] - eq_curve[i - 1], eq_curve[i - 1], 0.0))
+        mu = statistics.fmean(rets) if rets else 0.0
+        sd = statistics.pstdev(rets) if len(rets) >= 2 else 0.0
+        sharpe = _safe_div(mu, sd, 0.0) * math.sqrt(365 * 24 * 60)  # if 1-min candles, rough annualization
+
+        win = 0
+        loss = 0
+        # very rough trade p&l approximation
+        last_buy: Trade | None = None
+        for tr in trades:
+            if tr.side == "BUY":
+                last_buy = tr
+            elif tr.side == "SELL" and last_buy is not None:
+                pnl = (tr.price - last_buy.price) * min(tr.qty, last_buy.qty) - (tr.fee + last_buy.fee)
+                if pnl >= 0:
+                    win += 1
+                else:
+                    loss += 1
+                last_buy = None
+
+        return {
+            "equity_end": float(eq),
+            "return": float(ret),
+            "fees_paid": float(self.pf.fees_paid),
+            "trades": float(len(trades)),
+            "max_drawdown": float(max_dd),
+            "sharpe_like": float(sharpe),
+            "wins": float(win),
+            "losses": float(loss),
