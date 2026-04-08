@@ -946,3 +946,82 @@ class RiskManager:
             st.day_max_equity = eq
             st.day_realized = 0.0
             st.day_trades = 0
+
+        st.day_min_equity = min(st.day_min_equity, eq)
+        st.day_max_equity = max(st.day_max_equity, eq)
+
+        day_loss = max(0.0, (st.start_equity - eq) / max(1e-9, st.start_equity))
+        if day_loss >= self.cfg.max_daily_loss_pct:
+            st.killed = True
+            self.log.warn("risk", "max daily loss reached", day_loss=_fmt_pct(day_loss), eq=_fmt_money(eq))
+
+    def validate_order(self, pf: Portfolio, px: float, side: str, qty: float) -> None:
+        if pf.dd_killed:
+            raise RiskError("portfolio kill-switch active")
+        if qty <= 0:
+            raise RiskError("qty<=0")
+        eq = pf.equity(px)
+        if eq <= 0:
+            raise RiskError("equity<=0")
+
+        # position size cap
+        pos_value = pf.asset_qty * px
+        if side.upper() == "BUY":
+            new_pos_value = (pf.asset_qty + qty) * px
+        else:
+            new_pos_value = max(0.0, (pf.asset_qty - qty) * px)
+        if new_pos_value / eq > self.cfg.max_pos_pct + 1e-9:
+            raise RiskError("max position percent exceeded")
+
+
+# ---------------------------
+# Engine (backtest / paper)
+# ---------------------------
+
+
+@dataclasses.dataclass
+class EngineConfig:
+    symbol: str
+    strategy_name: str
+    seed: int
+    start_cash: float = 10_000.0
+    fees: Fees = dataclasses.field(default_factory=Fees)
+    risk: RiskConfig = dataclasses.field(default_factory=RiskConfig)
+    verbose: bool = False
+
+
+@dataclasses.dataclass
+class EngineResult:
+    run_id: str
+    kind: str
+    symbol: str
+    strategy: str
+    seed: int
+    candles: list[Candle]
+    trades: list[Trade]
+    metrics: dict[str, float]
+    summary: dict[str, t.Any]
+
+
+class NurjaEngine:
+    def __init__(self, cfg: EngineConfig, log: Logger) -> None:
+        self.cfg = cfg
+        self.log = log
+        self.rng = random.Random(cfg.seed ^ 0x6A09E667F3BCC909)
+
+        self.strategy = make_strategy(cfg.strategy_name)
+        self.pf = Portfolio(cash=float(cfg.start_cash), peak_equity=float(cfg.start_cash))
+        self.ctx = ExecutionContext(fees=cfg.fees, risk=cfg.risk, log=log, rng=self.rng)
+        self.ex = PaperExchange(self.ctx)
+        self.rm = RiskManager(cfg.risk, log)
+
+    def _qty_for_strength(self, px: float, strength: float) -> float:
+        strength = _clamp(strength, 0.0, 1.0)
+        eq = self.pf.equity(px)
+        max_pos_value = eq * self.cfg.risk.max_pos_pct
+        target_value = max_pos_value * (0.25 + 0.75 * strength)
+        target_qty = target_value / max(1e-9, px)
+        # don't exceed cash in buy
+        return max(0.0, target_qty)
+
+    def _compute_metrics(self, candles: list[Candle], trades: list[Trade]) -> dict[str, float]:
