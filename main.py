@@ -1341,3 +1341,82 @@ def _quickstart(log: Logger, db: NurjaDB) -> int:
     symbol = "NURJ/USD"
     strat = "loom_momentum"
     mg = MarketGenConfig(symbol=symbol, timeframe_sec=60, n=720, seed=seed, start_price=100.0)
+    candles = SyntheticMarket(mg, log).generate()
+
+    cfg = EngineConfig(symbol=symbol, strategy_name=strat, seed=seed, verbose=log.verbose)
+    eng = NurjaEngine(cfg, log)
+    res = eng.run(candles, kind="backtest")
+    export_run(res, db, log, export=True)
+    print(render_report(res))
+    curve = _equity_curve(res)
+    print("equity:", _sparkline(curve))
+    return 0
+
+
+def _backtest(args: argparse.Namespace, log: Logger, db: NurjaDB) -> int:
+    seed = _seed_or_random(args.seed)
+    mg = MarketGenConfig(
+        symbol=args.symbol,
+        timeframe_sec=args.tf,
+        n=int((args.days * 86400) / max(1, args.tf)),
+        seed=seed,
+        start_price=args.start_price,
+        drift=args.drift,
+        vol=args.vol,
+        jump_prob=args.jump_prob,
+        jump_sigma=args.jump_sigma,
+        mean_revert=args.mean_revert,
+        volume_base=args.volume_base,
+    )
+    candles = SyntheticMarket(mg, log).generate()
+
+    fees = Fees(maker_bps=args.maker_bps, taker_bps=args.taker_bps, slippage_bps=args.slippage_bps)
+    risk = RiskConfig(
+        max_pos_pct=args.max_pos_pct,
+        max_daily_loss_pct=args.max_daily_loss_pct,
+        kill_switch_drawdown_pct=args.kill_switch_dd,
+        min_order_usd=args.min_order_usd,
+        max_orders_per_hour=args.max_oph,
+        cooldown_sec=args.cooldown,
+    )
+    cfg = EngineConfig(symbol=args.symbol, strategy_name=args.strategy, seed=seed, start_cash=args.cash, fees=fees, risk=risk, verbose=log.verbose)
+    eng = NurjaEngine(cfg, log)
+    t0 = time.time()
+    res = eng.run(candles, kind="backtest")
+    dur = time.time() - t0
+
+    export_run(res, db, log, export=not args.no_export)
+    print(render_report(res))
+    print("runtime:", _human_time(dur))
+    curve = _equity_curve(res)
+    print("equity:", _sparkline(curve))
+    return 0
+
+
+def _paper(args: argparse.Namespace, log: Logger, db: NurjaDB) -> int:
+    seed = _seed_or_random(args.seed)
+    mg = MarketGenConfig(
+        symbol=args.symbol,
+        timeframe_sec=args.tf,
+        n=int((args.minutes * 60) / max(1, args.tf)),
+        seed=seed,
+        start_price=args.start_price,
+        drift=args.drift,
+        vol=args.vol,
+        jump_prob=args.jump_prob,
+        jump_sigma=args.jump_sigma,
+        mean_revert=args.mean_revert,
+        volume_base=args.volume_base,
+    )
+    candles = SyntheticMarket(mg, log).generate()
+
+    fees = Fees(maker_bps=args.maker_bps, taker_bps=args.taker_bps, slippage_bps=args.slippage_bps)
+    risk = RiskConfig(
+        max_pos_pct=args.max_pos_pct,
+        max_daily_loss_pct=args.max_daily_loss_pct,
+        kill_switch_drawdown_pct=args.kill_switch_dd,
+        min_order_usd=args.min_order_usd,
+        max_orders_per_hour=args.max_oph,
+        cooldown_sec=args.cooldown,
+    )
+    cfg = EngineConfig(symbol=args.symbol, strategy_name=args.strategy, seed=seed, start_cash=args.cash, fees=fees, risk=risk, verbose=log.verbose)
