@@ -1499,3 +1499,82 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("quickstart", help="Run a default backtest and export results")
 
     p_strat = sub.add_parser("strategies", help="List available strategies")
+    p_strat.set_defaults(fn=_strategies)
+
+    p_list = sub.add_parser("runs", help="List saved runs")
+    p_list.add_argument("--limit", type=_parse_int, default=20)
+    p_list.set_defaults(fn=_list_runs)
+
+    p_show = sub.add_parser("show", help="Show summary for a run")
+    p_show.add_argument("run_id")
+    p_show.add_argument("--dump-trades", action="store_true")
+    p_show.set_defaults(fn=_show_run)
+
+    def add_common(sim: argparse.ArgumentParser, kind: str) -> None:
+        sim.add_argument("--symbol", default="NURJ/USD")
+        sim.add_argument("--strategy", default="loom_momentum", choices=sorted(STRATEGY_REGISTRY))
+        sim.add_argument("--seed", type=_parse_int, default=None)
+        sim.add_argument("--cash", type=_parse_float, default=10_000.0)
+
+        sim.add_argument("--tf", type=_parse_int, default=60, help="timeframe seconds")
+        sim.add_argument("--start-price", type=_parse_float, default=100.0)
+        sim.add_argument("--drift", type=_parse_float, default=0.00002)
+        sim.add_argument("--vol", type=_parse_float, default=0.0035)
+        sim.add_argument("--mean-revert", type=_parse_float, default=0.05)
+        sim.add_argument("--jump-prob", type=_parse_float, default=0.006)
+        sim.add_argument("--jump-sigma", type=_parse_float, default=0.03)
+        sim.add_argument("--volume-base", type=_parse_float, default=1200.0)
+
+        sim.add_argument("--maker-bps", type=_parse_float, default=2.0)
+        sim.add_argument("--taker-bps", type=_parse_float, default=6.0)
+        sim.add_argument("--slippage-bps", type=_parse_float, default=3.0)
+
+        sim.add_argument("--max-pos-pct", type=_parse_float, default=0.35)
+        sim.add_argument("--max-daily-loss-pct", type=_parse_float, default=0.04)
+        sim.add_argument("--kill-switch-dd", type=_parse_float, default=0.18)
+        sim.add_argument("--min-order-usd", type=_parse_float, default=15.0)
+        sim.add_argument("--max-oph", type=_parse_int, default=12)
+        sim.add_argument("--cooldown", type=_parse_int, default=20)
+        sim.add_argument("--no-export", action="store_true", help="Save to DB but skip export files")
+
+        sim.epilog = f"Example: python NURJA.py {kind} --symbol NURJ/USD --strategy loom_meanrevert"
+
+    p_bt = sub.add_parser("backtest", help="Backtest a strategy on synthetic data")
+    p_bt.add_argument("--days", type=_parse_int, default=90)
+    add_common(p_bt, "backtest")
+    p_bt.set_defaults(fn=_backtest)
+
+    p_p = sub.add_parser("paper", help="Paper trade a strategy on synthetic data")
+    p_p.add_argument("--minutes", type=_parse_int, default=30)
+    add_common(p_p, "paper")
+    p_p.set_defaults(fn=_paper)
+
+    return p
+
+
+# ---------------------------
+# Main
+# ---------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    log = Logger(verbose=bool(args.verbose))
+    db = NurjaDB(path=str(args.db), log=log)
+    db.connect()
+    try:
+        if args.cmd == "quickstart":
+            return _quickstart(log, db)
+        fn = getattr(args, "fn", None)
+        if fn is None:
+            raise ConfigError("no handler for command")
+        return int(fn(args, log, db))
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
