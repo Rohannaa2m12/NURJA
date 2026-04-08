@@ -1104,3 +1104,82 @@ class NurjaEngine:
             "sharpe_like": float(sharpe),
             "wins": float(win),
             "losses": float(loss),
+        }
+
+    def run(self, candles: list[Candle], kind: str) -> EngineResult:
+        _assert_candles(candles)
+        warm = self.strategy.warmup()
+        trades: list[Trade] = []
+        st = self.rm.init_state(self.pf.equity(candles[0].c), candles[0].t)
+
+        for i, cd in enumerate(candles):
+            px = cd.c
+            self.rm.on_step(st, self.pf, px, cd.t)
+            if st.killed:
+                self.log.warn("engine", "risk killed run", i=i, t=cd.t)
+                break
+            if i < warm:
+                continue
+            sig = self.strategy.on_candle(i, candles, self.pf)
+            if sig.action == "HOLD":
+                continue
+
+            strength = _clamp(sig.strength, 0.0, 1.0)
+            qty = self._qty_for_strength(px, strength)
+            if qty <= 0:
+                continue
+
+            try:
+                self.rm.validate_order(self.pf, px, sig.action, qty)
+                if sig.action == "BUY":
+                    tr = self.ex.buy(self.pf, qty=qty, px=px, t=cd.t, note=sig.reason)
+                else:
+                    # sell full position proportionally to strength
+                    sell_qty = min(self.pf.asset_qty, max(0.0, self.pf.asset_qty * (0.35 + 0.65 * strength)))
+                    if sell_qty <= 0:
+                        continue
+                    tr = self.ex.sell(self.pf, qty=sell_qty, px=px, t=cd.t, note=sig.reason)
+                trades.append(tr)
+            except (RiskError, ExchangeError) as e:
+                self.log.warn("engine", "order rejected", i=i, reason=str(e), action=sig.action)
+
+        metrics = self._compute_metrics(candles, trades)
+        summary = {
+            "app": APP_NAME,
+            "version": APP_VERSION,
+            "kind": kind,
+            "symbol": self.cfg.symbol,
+            "strategy": self.cfg.strategy_name,
+            "seed": self.cfg.seed,
+            "created_at": _now_utc().isoformat(),
+            "end_equity": metrics.get("equity_end", float("nan")),
+            "return": metrics.get("return", float("nan")),
+            "max_drawdown": metrics.get("max_drawdown", float("nan")),
+            "trades": int(metrics.get("trades", 0.0)),
+        }
+        run_id = _rand_id("run")
+        return EngineResult(
+            run_id=run_id,
+            kind=kind,
+            symbol=self.cfg.symbol,
+            strategy=self.cfg.strategy_name,
+            seed=self.cfg.seed,
+            candles=candles,
+            trades=trades,
+            metrics=metrics,
+            summary=summary,
+        )
+
+
+# ---------------------------
+# Reporting & exporting
+# ---------------------------
+
+
+def _mkdirp(p: str) -> None:
+    os.makedirs(p, exist_ok=True)
+
+
+def export_run(result: EngineResult, db: NurjaDB, log: Logger, export: bool = True) -> str:
+    cfg = {
+        "symbol": result.symbol,
