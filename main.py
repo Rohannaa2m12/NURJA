@@ -1420,3 +1420,82 @@ def _paper(args: argparse.Namespace, log: Logger, db: NurjaDB) -> int:
         cooldown_sec=args.cooldown,
     )
     cfg = EngineConfig(symbol=args.symbol, strategy_name=args.strategy, seed=seed, start_cash=args.cash, fees=fees, risk=risk, verbose=log.verbose)
+    eng = NurjaEngine(cfg, log)
+    t0 = time.time()
+    res = eng.run(candles, kind="paper")
+    dur = time.time() - t0
+    export_run(res, db, log, export=not args.no_export)
+    print(render_report(res))
+    print("runtime:", _human_time(dur))
+    curve = _equity_curve(res)
+    print("equity:", _sparkline(curve))
+    return 0
+
+
+def _list_runs(args: argparse.Namespace, log: Logger, db: NurjaDB) -> int:
+    rows = db.list_runs(limit=args.limit)
+    _print_runs(rows)
+    return 0
+
+
+def _show_run(args: argparse.Namespace, log: Logger, db: NurjaDB) -> int:
+    candles = db.load_run_candles(args.run_id)
+    trades = db.load_run_trades(args.run_id)
+    metrics = db.load_run_metrics(args.run_id)
+    if not candles:
+        raise DataError("run not found (or candles missing)")
+    # light report
+    closes = [float(r["c"]) for r in candles]
+    curve = closes[:]  # proxy
+    print(f"run: {args.run_id}")
+    print(f"candles: {len(candles)}  trades: {len(trades)}")
+    print("close:", _sparkline(curve))
+    if metrics:
+        print("metrics:")
+        for k in sorted(metrics):
+            v = metrics[k]
+            if "drawdown" in k or "return" in k:
+                print(f"- {k}: {_fmt_pct(v)}")
+            elif "equity" in k or "fees" in k:
+                print(f"- {k}: {_fmt_money(v)}")
+            else:
+                print(f"- {k}: {v:.6f}")
+    if args.dump_trades:
+        print("trades:")
+        for r in trades:
+            print(f"- t={r['t']} {r['side']:<4} qty={float(r['qty']):.8f} px={float(r['price']):.6f} fee={float(r['fee']):.6f} note={r['note']}")
+    return 0
+
+
+def _strategies(_: argparse.Namespace, __: Logger, ___: NurjaDB) -> int:
+    print("Available strategies:")
+    for k in sorted(STRATEGY_REGISTRY):
+        print(f"- {k}")
+    return 0
+
+
+# ---------------------------
+# CLI parsing
+# ---------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="NURJA",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=textwrap.dedent(
+            f"""
+            {APP_NAME} {APP_VERSION}
+
+            Offline trading-bot workbench: generate markets, run strategies, persist and export runs.
+            """
+        ).strip(),
+    )
+    p.add_argument("--db", default=DB_FILENAME, help=f"SQLite db file (default: {DB_FILENAME})")
+    p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("quickstart", help="Run a default backtest and export results")
+
+    p_strat = sub.add_parser("strategies", help="List available strategies")
